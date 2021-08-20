@@ -14,7 +14,7 @@ if ! which yq; then
   exit 1
 fi
 
-KUBECONFIG="${KUBECONFIG:-~/.kube/config}"
+KUBECONFIG="${KUBECONFIG:-${HOME}/.kube/config}"
 NAME="${1:-${USER}}"
 CSR_NAME="${NAME}-csr"
 
