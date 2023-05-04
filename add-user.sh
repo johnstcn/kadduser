@@ -9,14 +9,20 @@ if ! which openssl; then
 fi
 
 
-if ! which yq; then
-  echo "Can't find the yq tool"
+if ! which jq; then
+  echo "Can't find the jq tool"
   exit 1
 fi
 
 KUBECONFIG="${KUBECONFIG:-${HOME}/.kube/config}"
 NAME="${1:-${USER}}"
 CSR_NAME="${NAME}-csr"
+KUBECTX=$(kubectl config view -o json | jq -r '."current-context"')
+CLUSTER_NAME=$(kubectl config view -o json | jq --arg kubectx "${KUBECTX}" -r '.contexts[] | select(.name == $kubectx) | .context.cluster')
+CLUSTER_ENDPOINT=$(kubectl config view -o json | jq --arg cluster "${CLUSTER_NAME}" -r '.clusters[] | select(.name == $cluster) | .cluster.server')
+
+echo "Fetching cluster CA"
+CERTIFICATE_AUTHORITY_DATA=$(kubectl --insecure-skip-tls-verify -n kube-public get cm kube-root-ca.crt -o json | jq -r '.data."ca.crt"' | base64 -w0)
 
 echo "Generating private key for user"
 USER_KEY="${PWD}/${NAME}-rsa.key"
@@ -55,7 +61,7 @@ cat <<EOF | kubectl create -f -
 apiVersion: certificates.k8s.io/v1
 kind: CertificateSigningRequest
 metadata:
-  name: ${CSR_NAME} 
+  name: ${CSR_NAME}
 spec:
   request: ${CSR_BASE64}
   signerName: kubernetes.io/kube-apiserver-client
@@ -66,16 +72,7 @@ EOF
 echo
 echo "Approving signing request."
 kubectl certificate approve "${CSR_NAME}"
-
 echo
-
-echo "Fetching cluster CA"
-CERTIFICATE_AUTHORITY_DATA=$(kubectl --insecure-skip-tls-verify -n kube-public describe configmap cluster-info | grep certificate-authority-data: | awk -F ':' '{print $2}' | xargs)
-
-echo "Fetching cluster endpoint from ${KUBECONFIG}"
-KUBECTX=$(yq e '.current-context' "${KUBECONFIG}")
-CLUSTER_NAME=$(KUBECTX="${KUBECTX}" yq e ".contexts[] | select(.name == env(KUBECTX)) | .context.cluster" "${KUBECONFIG}")
-CLUSTER_ENDPOINT=$(CLUSTER_NAME=${CLUSTER_NAME} yq e ".clusters[] | select(.name == env(CLUSTER_NAME)) | .cluster.server" "${KUBECONFIG}")
 
 echo "Creating namespace for user"
 USER_NS="${NAME}-ns"
@@ -100,6 +97,31 @@ rules:
   - update
   - patch
   - delete
+  - deletecollection
+- apiGroups:
+  - "rbac.authorization.k8s.io"
+  resources:
+  - "*"
+  verbs:
+    - get
+    - list
+    - watch
+    - create
+    - update
+    - patch
+    - delete
+- apiGroups:
+  - "apps"
+  resources:
+  - "*"
+  verbs:
+    - get
+    - list
+    - watch
+    - create
+    - update
+    - patch
+    - delete
 EOF
 
 echo "Creating rolebinding for user"
@@ -150,6 +172,7 @@ EOF
 )
 
 echo "${KUBECONFIG_DATA}" > "${KUBECONFIG_USER}"
+chmod 0600 "${KUBECONFIG_USER}
 echo "Cleaning up"
 rm -fv "${USER_KEY}"
 rm -fv "${USER_CSR}"
